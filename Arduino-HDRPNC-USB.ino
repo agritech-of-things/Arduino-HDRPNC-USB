@@ -3,10 +3,12 @@
 #include <CayenneLPP.h>
 #include <TimeLib.h>
 #include <EEPROM.h>
+#include <OneWire.h>
 #include <Wire.h>
 #include "DHT.h"
 
 Adafruit_INA219 ina219;
+OneWire  ds(19);
 
 template <class T, size_t N> constexpr size_t len(const T(&)[N]) { return N; }
 
@@ -41,7 +43,7 @@ int adc_key_in  = 0;
 int analogBuffer[SCOUNT]; // store the analog value in the array, read from ADC
 int analogBufferTemp[SCOUNT];
 int analogBufferIndex = 0,copyIndex = 0;
-float averageVoltage = 0,temperature = 25, tds=0, ec=0;
+float averageVoltage = 0, waterTemp = 25, tds=0, ec=0;
 
 // PH variables
 #define PhPin A9
@@ -52,15 +54,15 @@ int buffer_arr[10],temp;
 
 // INA219 variables
 uint32_t currentFrequency;
-float PowSec[60], PowMin[60], PowSecAve=0, PowMinAve=0, mWh=0, loadV=0;
+float PowSec[60], PowMin[60], PowSecAve=0, PowMinAve=0, mWh=0, Wh=0, kWh=0, loadV=0;
 int PowSecInd=0, PowMinInd=0;
 
 //init somemore variables
-const int relay1=24, relay2=25, relay3=26, relay4=27;
+const int relay1=24, relay2=25, relay3=26, relay4=27, waterLvl=18;
 bool timer=false, aut=false, change=false, invalid=false;
-int onPeriod=0, offPeriod=0, h=0;
-int tThreshold=0, hThreshold=0, pumpElapse=0, nextSwitch=0, line=1, idl=0;
-float hA, hB, tA, tB, pH=0, rec[12]={0,0,0,0,0,0,0,0,0,0,0,0};
+int onPeriod=0, offPeriod=0, h=0, manual=0;
+int tThreshold=0, hThreshold=0, TDSMaxOffset=0, TDSMinOffset=0, pumpElapse=0, fertElapse=0, nextSwitch=0, line=1, idl=0;
+float hA, hB, tA, tB, pH=0, rec[14]={0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 DHT dhtA(DHTA, DHTTYPE);
 DHT dhtB(DHTB, DHTTYPE);
 
@@ -77,17 +79,6 @@ int read_LCD_buttons()
  if (adc_key_in < 500)  return btnLEFT; 
  if (adc_key_in < 900)  return btnSELECT;   
  return btnNONE;  // when all others fail, return this...
-}
-
-void pumpTimer(){
-  if(timer==true || (pumpElapse!=0 && digitalRead(relay1)==true)){
-    pumpElapse++;
-    if ((digitalRead(relay1)==false && pumpElapse >= offPeriod) || (digitalRead(relay1)==true && pumpElapse >= onPeriod)){
-      pumpElapse=0;
-      digitalWrite(relay1,!digitalRead(relay1));
-      change=true;
-    }
-  }
 }
 
 void PHSensor(){
@@ -130,7 +121,7 @@ void TdsMeter(){
       for(copyIndex=0;copyIndex<SCOUNT;copyIndex++) analogBufferTemp[copyIndex]= analogBuffer[copyIndex];
       
       averageVoltage = getMedianNum(analogBufferTemp,SCOUNT) * (float)VREF/ 1024.0; // read the analog value more stable by the median filtering algorithm, and convert to voltage value
-      float compensationCoefficient=1.0+0.02*(temperature-25.0); //temperature compensation formula: fFinalResult(25^C) = fFinalResult(current)/(1.0+0.02*(fTP-25.0));
+      float compensationCoefficient=1.0+0.02*(waterTemp-25.0); //temperature compensation formula: fFinalResult(25^C) = fFinalResult(current)/(1.0+0.02*(fTP-25.0));
       float compensationVolatge=averageVoltage/compensationCoefficient; //temperature compensation
       
       tds = (133.42*compensationVolatge*compensationVolatge*compensationVolatge - 255.86*compensationVolatge*compensationVolatge + 857.39*compensationVolatge)*0.5; //convert voltage value to tds value
@@ -160,6 +151,47 @@ int getMedianNum(int bArray[], int iFilterLen){
   return bTemp;
 }
 
+void WaterTemperature(){
+  byte i;
+  byte present = 0;
+  byte type_s;
+  byte data[9];
+  byte addr[8];
+  
+  if (ds.search(addr)) {
+    ds.reset();
+    ds.select(addr);
+    ds.write(0x44, 1);
+
+    delay(1000);
+
+    present = ds.reset();
+    ds.select(addr);    
+    ds.write(0xBE);
+
+    for ( i = 0; i < 9; i++) {           // we need 9 bytes
+      data[i] = ds.read();
+    }
+
+    int16_t raw = (data[1] << 8) | data[0];
+    if (type_s) {
+      raw = raw << 3; // 9 bit resolution default
+      if (data[7] == 0x10) {
+        // "count remain" gives full 12 bit resolution
+        raw = (raw & 0xFFF0) + 12 - data[6];
+      }
+    } else {
+      byte cfg = (data[4] & 0x60);
+      // at lower res, the low bits are undefined, so let's zero them
+      if (cfg == 0x00) raw = raw & ~7;  // 9 bit resolution, 93.75 ms
+      else if (cfg == 0x20) raw = raw & ~3; // 10 bit res, 187.5 ms
+      else if (cfg == 0x40) raw = raw & ~1; // 11 bit res, 375 ms
+      //// default is 12 bit resolution, 750 ms conversion time
+    }
+    waterTemp = (float)raw / 16.0;
+  }
+}
+
 void HTSensor(){
   // Reading temperature or humidity takes about 250 milliseconds!
   // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
@@ -178,17 +210,72 @@ void HTSensor(){
   // Compute heat index in Celsius (isFahreheit = false)
 //  float hicA = dhtA.computeHeatIndex(tA, hA, false);
 //  float hicB = dhtB.computeHeatIndex(tB, hB, false);
+}
 
+void Automation(){
   if(aut==true){
     if (hA<=hThreshold || hB<=hThreshold || tA>=tThreshold || tB>=tThreshold) timer=true;
     else timer=false;
-  }  
+    
+    if(timer==true || (pumpElapse!=0 && digitalRead(relay1)==true)){
+      pumpElapse++;
+      if ((digitalRead(relay1)==false && pumpElapse >= offPeriod) || (digitalRead(relay1)==true && pumpElapse >= onPeriod)){
+        pumpElapse=0;
+        digitalWrite(relay1,!digitalRead(relay1));
+        change=true;
+      }
+    }
+    if (tds<TDSMinOffset || ec<(TDSMinOffset*1.12)){
+      fertElapse=10;
+      digitalWrite(relay2, HIGH);
+      digitalWrite(relay3, HIGH);
+      digitalWrite(relay4, HIGH);
+    }
+
+    if (fertElapse<=0){
+      digitalWrite(relay2, LOW);
+      digitalWrite(relay3, LOW);
+      digitalWrite(relay4, LOW);
+    }
+  }
   else timer=false;
+
+  if (manual==0){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, LOW);
+  }
+  else if (manual==1){
+    digitalWrite(relay1, HIGH);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, LOW);
+  }
+  else if (manual==2){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, HIGH);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, LOW);
+  }
+  else if (manual==3){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, HIGH);
+    digitalWrite(relay4, LOW);
+  }
+  else if (manual==4){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, HIGH);
+  }
 }
 
 void variablesManager(){
   if (now() >= ts+1){
     idl++;
+    if (fertElapse>0) fertElapse--;
     ts = now();
     if (PowSecInd < 60){
       PowSec[PowSecInd] = ina219.getPower_mW();
@@ -214,11 +301,14 @@ void variablesManager(){
         PowMinAve = PowMinAve + PowMin[i];
       }
       mWh = PowMinAve/60;
+      if(mWh > 100) Wh = mWh / 1000;
+      if(Wh > 100) kWh = Wh / 1000;
       PowMinInd = 0;
     }
   }
   if (now() >= tstamp+interval){
     HTSensor();
+    WaterTemperature();
 	  TdsMeter();
     PHSensor();
     float shuntvoltage = ina219.getShuntVoltage_mV();
@@ -255,6 +345,15 @@ void kypdBtn(){
     line++;
     if(line>8)line=1;
     idl=0;
+    delay(200);
+  }
+  if(lcd_key==btnRIGHT && line==1 && digitalRead(bl)==HIGH){
+    aut=true;
+    delay(200);
+  }
+  if(lcd_key==btnLEFT){
+    manual++;
+    if (manual>4) manual=0;
     delay(200);
   }
   if(idl>=60){
@@ -304,6 +403,7 @@ void serComm(){
     }
     else{
       lpp.addDigitalInput(0, 0);
+      lpp.addDigitalInput(58,digitalRead(waterLvl));
       if (rec[4]!=hA){
         lpp.addRelativeHumidity(51,hA);
         rec[4]=hA;
@@ -328,13 +428,21 @@ void serComm(){
         lpp.addAnalogInput(57,pH);
         rec[9]=pH;
       }
-      if (rec[10]!=mWh){
-        lpp.addAnalogInput(58,mWh);
-        rec[10]=mWh;
-      }
-      if (rec[11]!=loadV){
+      if (rec[10]!=loadV){
         lpp.addAnalogInput(59,loadV);
-        rec[11]=loadV;
+        rec[10]=loadV;
+      }
+      if (rec[11]!=mWh){
+        lpp.addAnalogInput(60,mWh);
+        rec[11]=mWh;
+      }
+      if (rec[12]!=Wh){
+        lpp.addAnalogInput(61,Wh);
+        rec[12]=Wh;
+      }
+      if (rec[13]!=kWh){
+        lpp.addAnalogInput(62,kWh);
+        rec[13]=kWh;
       }
     }
     
@@ -407,8 +515,11 @@ void serComm(){
     lpp.addTemperature(54,rec[7]);
     lpp.addAnalogInput(55,rec[8]);
     lpp.addAnalogInput(57,rec[9]);
-    lpp.addAnalogInput(58,rec[10]);
-    lpp.addAnalogInput(59,rec[11]);
+    lpp.addDigitalInput(58,digitalRead(waterLvl));
+    lpp.addAnalogInput(59,rec[10]);
+    lpp.addAnalogInput(60,rec[11]);
+    lpp.addAnalogInput(61,rec[12]);
+    lpp.addAnalogInput(62,rec[13]);
     
     Serial.write(lpp.getBuffer(),lpp.getSize());
     Serial.println();
@@ -423,6 +534,7 @@ void setup() {
   lcd.begin(16, 2);
   dhtA.begin();
   dhtB.begin();
+  pinMode(waterLvl, INPUT);
   pinMode(TdsPin,INPUT);
   pinMode(PhPin,INPUT);
   pinMode(bl,OUTPUT);
@@ -445,7 +557,7 @@ void loop()
 {
   kypdBtn();
   variablesManager();
-  if (aut==true) pumpTimer();
+  Automation();
   serComm();
   
 // Update LCD Display
@@ -545,9 +657,13 @@ void loop()
       lcd.print(mWh);
       lcd.print("mW/h     ");
     }
-    else{
-      lcd.print(mWh/1000);
+    else if(mWh>100){
+      lcd.print(Wh);
       lcd.print("W/h     ");
+    }
+    else if(Wh>100){
+      lcd.print(kWh);
+      lcd.print("W/h      ");
     }
   }
   else if(line==8){
