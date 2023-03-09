@@ -212,35 +212,10 @@ void HTSensor(){
 //  float hicB = dhtB.computeHeatIndex(tB, hB, false);
 }
 
-void Automation(){
-  if(aut==true){
-    if (hA<=hThreshold || hB<=hThreshold || tA>=tThreshold || tB>=tThreshold) timer=true;
-    else timer=false;
-    
-    if(timer==true || (pumpElapse!=0 && digitalRead(relay1)==true)){
-      pumpElapse++;
-      if ((digitalRead(relay1)==false && pumpElapse >= offPeriod) || (digitalRead(relay1)==true && pumpElapse >= onPeriod)){
-        pumpElapse=0;
-        digitalWrite(relay1,!digitalRead(relay1));
-        change=true;
-      }
-    }
-    if (tds<TDSMinOffset || ec<(TDSMinOffset*1.12)){
-      fertElapse=10;
-      digitalWrite(relay2, HIGH);
-      digitalWrite(relay3, HIGH);
-      digitalWrite(relay4, HIGH);
-    }
-
-    if (fertElapse<=0){
-      digitalWrite(relay2, LOW);
-      digitalWrite(relay3, LOW);
-      digitalWrite(relay4, LOW);
-    }
-  }
-  else timer=false;
-
+void pumpControl(){
   if (manual==0){
+    pumpElapse=0;
+    fertElapse=0;
     digitalWrite(relay1, LOW);
     digitalWrite(relay2, LOW);
     digitalWrite(relay3, LOW);
@@ -270,11 +245,18 @@ void Automation(){
     digitalWrite(relay3, LOW);
     digitalWrite(relay4, HIGH);
   }
+  if (pumpElapse<=0) digitalWrite(relay1, LOW);
+  if (fertElapse<=0){
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, LOW);
+  }
 }
 
 void variablesManager(){
   if (now() >= ts+1){
     idl++;
+    if (pumpElapse>0) pumpElapse--;
     if (fertElapse>0) fertElapse--;
     ts = now();
     if (PowSecInd < 60){
@@ -290,7 +272,6 @@ void variablesManager(){
     }
   }
   if (now() >= tm+60){
-    if(timer==true) pumpElapse++;
     tm = now();
     if (PowMinInd < 60){
       PowMin[PowMinInd] = PowSecAve;
@@ -350,11 +331,13 @@ void kypdBtn(){
   if(lcd_key==btnRIGHT && line==1 && digitalRead(bl)==HIGH){
     aut=true;
     delay(200);
-  }
+  } 
   if(lcd_key==btnLEFT){
     manual++;
-    if (manual>4) manual=0;
     delay(200);
+    if (manual>4) manual=0;
+    if (manual==1) pumpElapse=120;
+    else if (manual>1) fertElapse=20;
   }
   if(idl>=60){
     digitalWrite(bl,LOW);
@@ -475,20 +458,24 @@ void serComm(){
           aut=bool(dataKeys["value"]);
           change=true;
         }
-        else if ((channel == relay1+100) && aut==false){
+        else if (channel == relay1+100){
           digitalWrite(relay1, bool(dataKeys["value"]));
+          pumpElapse=120;
           change=true;
         }
-        else if ((channel == relay2+100) && aut==false){
+        else if (channel == relay2+100){
           digitalWrite(relay2, bool(dataKeys["value"]));
+          fertElapse=20;
           change=true;
         }
-        else if ((channel == relay3+100) && aut==false){
+        else if (channel == relay3+100){
           digitalWrite(relay3, bool(dataKeys["value"]));
+          fertElapse=20;
           change=true;
         }
-        else if ((channel == relay4+100) && aut==false){
+        else if (channel == relay4+100){
           digitalWrite(relay4, bool(dataKeys["value"]));
+          fertElapse=20;
           change=true;
         }
         else if (channel==106) onPeriod=int(dataKeys["value"]);
@@ -557,7 +544,7 @@ void loop()
 {
   kypdBtn();
   variablesManager();
-  Automation();
+  pumpControl();
   serComm();
   
 // Update LCD Display
@@ -580,30 +567,34 @@ void loop()
 
   if(line==1){
     lcd.setCursor(0,1);// for Line 2
-    if(aut==true){
-      if(!digitalRead(relay1)){
-        lcd.print("AutoPump:OFF ~");
-        nextSwitch=(-1)*(pumpElapse-offPeriod);
-      }
-      else if(digitalRead(relay1)){
-        lcd.print("AutoPump:ON  ~");
-        nextSwitch=(-1)*(pumpElapse-onPeriod);
-      }
-      if(timer==true || (pumpElapse!=0 && digitalRead(relay1)==true)){
-        if(nextSwitch<10)lcd.print("0");
-        lcd.print(nextSwitch);
-      }
-      else if(timer==false && digitalRead(relay1)==false){
-        lcd.print("--");
-      }
+    if(!digitalRead(relay1) && !digitalRead(relay2) && !digitalRead(relay3) && !digitalRead(relay4)){
+      lcd.print("All Pump Off  --");
+    } 
+    else if(digitalRead(relay1)){
+      lcd.print("MainPump: ON~");
+      if(pumpElapse<100)lcd.print("0");
+      if(pumpElapse<10)lcd.print("0");
+      lcd.print(pumpElapse);
     }
-    else if(aut==false){
-      if(!digitalRead(relay1)){
-        lcd.print("Pump:OFF     ~--");
-      }
-      else if(digitalRead(relay1)){
-        lcd.print("Pump:ON      ~--");
-      }
+    else if(digitalRead(relay2) && digitalRead(relay3) && digitalRead(relay4)){
+      lcd.print("AllFert: ON  ~");
+      if(fertElapse<10)lcd.print("0");
+      lcd.print(fertElapse);
+    }
+    else if(digitalRead(relay2) && !digitalRead(relay3) && !digitalRead(relay4)){
+      lcd.print("Fert A: ON   ~");
+      if(fertElapse<10)lcd.print("0");
+      lcd.print(fertElapse);
+    }
+    else if(!digitalRead(relay2) && digitalRead(relay3) && !digitalRead(relay4)){
+      lcd.print("Fert B: ON   ~");
+      if(fertElapse<10)lcd.print("0");
+      lcd.print(fertElapse);
+    }
+    else if(!digitalRead(relay2) && !digitalRead(relay3) && digitalRead(relay4)){
+      lcd.print("Fert C: ON   ~");
+      if(fertElapse<10)lcd.print("0");
+      lcd.print(fertElapse);
     }
   }
   else if(line==2){
