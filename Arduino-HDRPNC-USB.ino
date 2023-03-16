@@ -17,7 +17,7 @@ const int rs = 8, en = 9, d4 = 4, d5 = 5, d6 = 6, d7 = 7, bl = 10;
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 
 // initialize time related variables
-unsigned long ts = 0UL, tm = 0UL, tstamp = 0UL, interval = 600UL;
+unsigned long ts = 0UL, tm = 0UL, tstamp = 0UL, interval = 900UL;
 
 // For accurate Time reading, use Arduino Real Time Clock
 static uint32_t last_time = 0; // RTC
@@ -62,7 +62,7 @@ const int relay1=24, relay2=25, relay3=26, relay4=27, waterLvl=18;
 bool timer=false, aut=false, change=false, invalid=false;
 int onPeriod=0, offPeriod=0, h=0, manual=0;
 int tThreshold=0, hThreshold=0, TDSMaxOffset=0, TDSMinOffset=0, pumpElapse=0, fertElapse=0, nextSwitch=0, line=1, idl=0;
-float hA, hB, tA, tB, pH=0, rec[14]={0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+float hA, hB, tA, tB, pH=0, rec[15]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 DHT dhtA(DHTA, DHTTYPE);
 DHT dhtB(DHTB, DHTTYPE);
 
@@ -213,51 +213,57 @@ void HTSensor(){
 }
 
 void pumpControl(){
-  if (manual==0){
-    pumpElapse=0;
-    fertElapse=0;
-    digitalWrite(relay1, LOW);
-    digitalWrite(relay2, LOW);
-    digitalWrite(relay3, LOW);
-    digitalWrite(relay4, LOW);
-  }
-  else if (manual==1){
-    digitalWrite(relay1, HIGH);
-    digitalWrite(relay2, LOW);
-    digitalWrite(relay3, LOW);
-    digitalWrite(relay4, LOW);
-  }
-  else if (manual==2){
-    digitalWrite(relay1, LOW);
-    digitalWrite(relay2, HIGH);
-    digitalWrite(relay3, LOW);
-    digitalWrite(relay4, LOW);
-  }
-  else if (manual==3){
-    digitalWrite(relay1, LOW);
-    digitalWrite(relay2, LOW);
-    digitalWrite(relay3, HIGH);
-    digitalWrite(relay4, LOW);
-  }
-  else if (manual==4){
-    digitalWrite(relay1, LOW);
-    digitalWrite(relay2, LOW);
-    digitalWrite(relay3, LOW);
-    digitalWrite(relay4, HIGH);
-  }
-  if (pumpElapse<=0) digitalWrite(relay1, LOW);
   if (fertElapse<=0){
     digitalWrite(relay2, LOW);
     digitalWrite(relay3, LOW);
     digitalWrite(relay4, LOW);
+  }
+  if (pumpElapse<=0) digitalWrite(relay1, LOW);
+  if (aut==true){
+    if (fertElapse>0){
+      digitalWrite(relay2, HIGH);
+      digitalWrite(relay3, HIGH);
+      digitalWrite(relay4, HIGH);
+    }
+    else if (pumpElapse>0) digitalWrite(relay1, HIGH);
+  }
+  else if(aut==false){
+    if (manual==0){
+      pumpElapse=0;
+      fertElapse=0;
+    }
+    else if (manual==1){
+      digitalWrite(relay1, HIGH);
+      digitalWrite(relay2, LOW);
+      digitalWrite(relay3, LOW);
+      digitalWrite(relay4, LOW);
+    }
+    else if (manual==2){
+      digitalWrite(relay1, LOW);
+      digitalWrite(relay2, HIGH);
+      digitalWrite(relay3, LOW);
+      digitalWrite(relay4, LOW);
+    }
+    else if (manual==3){
+      digitalWrite(relay1, LOW);
+      digitalWrite(relay2, LOW);
+      digitalWrite(relay3, HIGH);
+      digitalWrite(relay4, LOW);
+    }
+    else if (manual==4){
+      digitalWrite(relay1, LOW);
+      digitalWrite(relay2, LOW);
+      digitalWrite(relay3, LOW);
+      digitalWrite(relay4, HIGH);
+    }
   }
 }
 
 void variablesManager(){
   if (now() >= ts+1){
     idl++;
-    if (pumpElapse>0) pumpElapse--;
     if (fertElapse>0) fertElapse--;
+    else if (pumpElapse>0) pumpElapse--;
     ts = now();
     if (PowSecInd < 60){
       PowSec[PowSecInd] = ina219.getPower_mW();
@@ -328,14 +334,15 @@ void kypdBtn(){
     idl=0;
     delay(200);
   }
-  if(lcd_key==btnRIGHT && line==1 && digitalRead(bl)==HIGH){
-    aut=true;
+  if(lcd_key==btnRIGHT){
+    aut=!aut;
+    if(aut==true) manual=0;
     delay(200);
   } 
   if(lcd_key==btnLEFT){
     manual++;
     delay(200);
-    if (manual>4) manual=0;
+    if (manual>4 || aut==true) manual=0;
     if (manual==1) pumpElapse=120;
     else if (manual>1) fertElapse=20;
   }
@@ -354,8 +361,18 @@ time_t requestSync()
   lpp.addDigitalInput(0, 0);
   Serial.write(lpp.getBuffer(),lpp.getSize());
   Serial.println();
-  delay(250);
-  return 0; // the time will be sent later in response to serial mesg
+  while (!Serial.available());
+  if(Serial.find(TIME_HEADER)) {
+    unsigned long pctime;
+    pctime = Serial.parseInt();
+    setTime(pctime);
+    adjustTime(28800);
+    
+//    Serial.print("mssg");
+//    Serial.print("Time: ");
+//    Serial.print(pctime);
+//    Serial.println();
+  }
 }
 
 void serComm(){
@@ -364,69 +381,67 @@ void serComm(){
     
   if (change==true){
     lpp.reset();
-    if (rec[0]!=int(digitalRead(relay1))){
+    lpp.addDigitalInput(0, 0);
+    lpp.addDigitalInput(58,digitalRead(waterLvl));
+    if (rec[0]!=int(aut)){
+      lpp.addDigitalInput(1,aut);
+      rec[0]=int(aut);
+    }
+    if (rec[1]!=int(digitalRead(relay1))){
       lpp.addDigitalInput(relay1,digitalRead(relay1));
-      lpp.addDigitalInput(relay1,digitalRead(relay1));
-      rec[0]=int(digitalRead(relay1));
+      rec[1]=int(digitalRead(relay1));
     }
-    else if (rec[1]!=int(digitalRead(relay2))){
+    if (rec[2]!=int(digitalRead(relay2))){
       lpp.addDigitalInput(relay2,digitalRead(relay2));
-      lpp.addDigitalInput(relay2,digitalRead(relay2));
-      rec[1]=int(digitalRead(relay2));
+      rec[2]=int(digitalRead(relay2));
     }
-    else if (rec[2]!=int(digitalRead(relay3))){
+    if (rec[3]!=int(digitalRead(relay3))){
       lpp.addDigitalInput(relay3,digitalRead(relay3));
-      lpp.addDigitalInput(relay3,digitalRead(relay3));
-      rec[2]=int(digitalRead(relay3));
+      rec[3]=int(digitalRead(relay3));
     }
-    else if (rec[3]!=int(digitalRead(relay4))){
+    if (rec[4]!=int(digitalRead(relay4))){
       lpp.addDigitalInput(relay4,digitalRead(relay4));
-      lpp.addDigitalInput(relay4,digitalRead(relay4));
-      rec[3]=int(digitalRead(relay4));
+      rec[4]=int(digitalRead(relay4));
     }
-    else{
-      lpp.addDigitalInput(0, 0);
-      lpp.addDigitalInput(58,digitalRead(waterLvl));
-      if (rec[4]!=hA){
-        lpp.addRelativeHumidity(51,hA);
-        rec[4]=hA;
-      }
-      if (rec[5]!=tA){
-        lpp.addTemperature(52,tA);
-        rec[5]=tA;
-      }
-      if (rec[6]!=hB){
-        lpp.addRelativeHumidity(53,hB);
-        rec[6]=hB;
-      }
-      if (rec[7]!=tB){
-        lpp.addTemperature(54,tB);
-        rec[7]=tB;
-      }
-      if (rec[8]!=tds){
-        lpp.addAnalogInput(55,tds);
-        rec[8]=tds;
-      }
-      if (rec[9]!=pH){
-        lpp.addAnalogInput(57,pH);
-        rec[9]=pH;
-      }
-      if (rec[10]!=loadV){
-        lpp.addAnalogInput(59,loadV);
-        rec[10]=loadV;
-      }
-      if (rec[11]!=mWh){
-        lpp.addAnalogInput(60,mWh);
-        rec[11]=mWh;
-      }
-      if (rec[12]!=Wh){
-        lpp.addAnalogInput(61,Wh);
-        rec[12]=Wh;
-      }
-      if (rec[13]!=kWh){
-        lpp.addAnalogInput(62,kWh);
-        rec[13]=kWh;
-      }
+    if (rec[5]!=hA){
+      lpp.addRelativeHumidity(51,hA);
+      rec[5]=hA;
+    }
+    if (rec[6]!=tA){
+      lpp.addTemperature(52,tA);
+      rec[6]=tA;
+    }
+    if (rec[7]!=hB){
+      lpp.addRelativeHumidity(53,hB);
+      rec[7]=hB;
+    }
+    if (rec[8]!=tB){
+      lpp.addTemperature(54,tB);
+      rec[8]=tB;
+    }
+    if (rec[9]!=tds){
+      lpp.addAnalogInput(55,tds);
+      rec[9]=tds;
+    }
+    if (rec[10]!=pH){
+      lpp.addAnalogInput(57,pH);
+      rec[10]=pH;
+    }
+    if (rec[11]!=loadV){
+      lpp.addAnalogInput(59,loadV);
+      rec[11]=loadV;
+    }
+    if (rec[12]!=mWh){
+      lpp.addAnalogInput(60,mWh);
+      rec[12]=mWh;
+    }
+    if (rec[13]!=Wh){
+      lpp.addAnalogInput(61,Wh);
+      rec[13]=Wh;
+    }
+    if (rec[14]!=kWh){
+      lpp.addAnalogInput(62,kWh);
+      rec[14]=kWh;
     }
     
     Serial.write(lpp.getBuffer(),lpp.getSize());
@@ -436,21 +451,34 @@ void serComm(){
     delay(250);
   }
   if (Serial.available()){
-    if(Serial.find(TIME_HEADER)) {
-       unsigned long pctime;
-       pctime = Serial.parseInt();
-       setTime(pctime);
-       adjustTime(28800);
-    }
-
-    else{
+    if (Serial.find("D")){
       byte buff[Serial.available()];
       int buffSize = Serial.readBytes(buff, Serial.available());
       
-      StaticJsonDocument<512> dnLinkBuff;
+//      Serial.print("mssg");
+//      Serial.print("Data Received: ");
+//      for (unsigned int i = 0; i < buffSize; i++){
+//        Serial.print("0x");
+//        Serial.print(buff[i], HEX);
+//        Serial.print(" ");
+//      }
+//      Serial.println();
+      
+      byte dataBuff[buffSize-1];
+      int dataSize=buffSize-1;
+      for (unsigned int i = 1; i < buffSize; i++){
+        dataBuff[i-1] = buff[i];
+      }
+    
+      DynamicJsonDocument dnLinkBuff(4096);
       JsonArray dnLink = dnLinkBuff.to<JsonArray>();
       lpp.decode(buff, buffSize, dnLink);
-  
+
+//      Serial.print("mssg");
+//      Serial.print("dnLink: ");
+//      serializeJson(dnLink, Serial);
+//      Serial.println();
+    
       for (JsonVariant dataKeys : dnLink){
         int channel = dataKeys["channel"];
         if (channel==100) invalid=bool(dataKeys["value"]);
@@ -458,31 +486,42 @@ void serComm(){
           aut=bool(dataKeys["value"]);
           change=true;
         }
-        else if (channel == relay1+100){
-          digitalWrite(relay1, bool(dataKeys["value"]));
-          pumpElapse=120;
+        else if (channel == relay1+100 && bool(dataKeys["value"])==true){
+          manual=1;
+          pumpElapse=90;
           change=true;
         }
-        else if (channel == relay2+100){
-          digitalWrite(relay2, bool(dataKeys["value"]));
+        else if (channel == relay2+100 && bool(dataKeys["value"])==true){
+          manual=2;
           fertElapse=20;
           change=true;
         }
-        else if (channel == relay3+100){
-          digitalWrite(relay3, bool(dataKeys["value"]));
+        else if (channel == relay3+100 && bool(dataKeys["value"])==true){
+          manual=3;
           fertElapse=20;
           change=true;
         }
-        else if (channel == relay4+100){
-          digitalWrite(relay4, bool(dataKeys["value"]));
+        else if (channel == relay4+100 && bool(dataKeys["value"])==true){
+          manual=4;
           fertElapse=20;
           change=true;
         }
-        else if (channel==106) onPeriod=int(dataKeys["value"]);
-        else if (channel==107) offPeriod=int(dataKeys["value"]);
-        else if (channel==108) hThreshold=int(dataKeys["value"]);
-        else if (channel==109) tThreshold=int(dataKeys["value"]);
+        else if (channel==106){
+          pumpElapse=int(dataKeys["value"]);
+          change=true;
+        }
+        else if (channel==107){
+          fertElapse=int(dataKeys["value"]);
+          change=true;
+        }
       }
+      
+//      Serial.print("mssg");
+//      Serial.print("pumpElapse: ");
+//      Serial.print(pumpElapse);
+//      Serial.print("  fertElapse: ");
+//      Serial.print(fertElapse);
+//      Serial.println();
       
       dnLinkBuff.clear();
       dnLink.clear();
@@ -492,21 +531,22 @@ void serComm(){
   if (invalid==true){
     lpp.reset();
     lpp.addDigitalInput(0, 0);
-    lpp.addDigitalInput(relay1,rec[0]);
-    lpp.addDigitalInput(relay2,rec[1]);
-    lpp.addDigitalInput(relay3,rec[2]);
-    lpp.addDigitalInput(relay4,rec[3]);
-    lpp.addRelativeHumidity(51,rec[4]);
-    lpp.addTemperature(52,rec[5]);
-    lpp.addRelativeHumidity(53,rec[6]);
-    lpp.addTemperature(54,rec[7]);
-    lpp.addAnalogInput(55,rec[8]);
-    lpp.addAnalogInput(57,rec[9]);
+    lpp.addDigitalInput(1, rec[0]);
+    lpp.addDigitalInput(relay1,rec[1]);
+    lpp.addDigitalInput(relay2,rec[2]);
+    lpp.addDigitalInput(relay3,rec[3]);
+    lpp.addDigitalInput(relay4,rec[4]);
+    lpp.addRelativeHumidity(51,rec[5]);
+    lpp.addTemperature(52,rec[6]);
+    lpp.addRelativeHumidity(53,rec[7]);
+    lpp.addTemperature(54,rec[8]);
+    lpp.addAnalogInput(55,rec[9]);
+    lpp.addAnalogInput(57,rec[10]);
     lpp.addDigitalInput(58,digitalRead(waterLvl));
-    lpp.addAnalogInput(59,rec[10]);
-    lpp.addAnalogInput(60,rec[11]);
-    lpp.addAnalogInput(61,rec[12]);
-    lpp.addAnalogInput(62,rec[13]);
+    lpp.addAnalogInput(59,rec[11]);
+    lpp.addAnalogInput(60,rec[12]);
+    lpp.addAnalogInput(61,rec[13]);
+    lpp.addAnalogInput(62,rec[14]);
     
     Serial.write(lpp.getBuffer(),lpp.getSize());
     Serial.println();
@@ -543,8 +583,8 @@ void setup() {
 void loop()
 {
   kypdBtn();
-  variablesManager();
   pumpControl();
+  variablesManager();
   serComm();
   
 // Update LCD Display
@@ -568,18 +608,20 @@ void loop()
   if(line==1){
     lcd.setCursor(0,1);// for Line 2
     if(!digitalRead(relay1) && !digitalRead(relay2) && !digitalRead(relay3) && !digitalRead(relay4)){
-      lcd.print("All Pump Off  --");
+      lcd.print("PumpOff Auto:");
+      if (aut==true) lcd.print("ON~");
+      else lcd.print("OFF");
     } 
+    else if(digitalRead(relay2) && digitalRead(relay3) && digitalRead(relay4)){
+      lcd.print("AllFert: ON  ~");
+      if(fertElapse<10)lcd.print("0");
+      lcd.print(fertElapse);
+    }
     else if(digitalRead(relay1)){
       lcd.print("MainPump: ON~");
       if(pumpElapse<100)lcd.print("0");
       if(pumpElapse<10)lcd.print("0");
       lcd.print(pumpElapse);
-    }
-    else if(digitalRead(relay2) && digitalRead(relay3) && digitalRead(relay4)){
-      lcd.print("AllFert: ON  ~");
-      if(fertElapse<10)lcd.print("0");
-      lcd.print(fertElapse);
     }
     else if(digitalRead(relay2) && !digitalRead(relay3) && !digitalRead(relay4)){
       lcd.print("Fert A: ON   ~");
