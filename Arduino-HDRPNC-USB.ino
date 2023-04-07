@@ -43,7 +43,7 @@ int adc_key_in  = 0;
 int analogBuffer[SCOUNT]; // store the analog value in the array, read from ADC
 int analogBufferTemp[SCOUNT];
 int analogBufferIndex = 0,copyIndex = 0;
-float averageVoltage = 0, waterTemp = 25, tds=0, ec=0;
+float averageVoltage = 0, tds=0, ec=0;
 
 // PH variables
 #define PhPin A9
@@ -59,16 +59,15 @@ int PowSecInd=0, PowMinInd=0;
 
 //init somemore variables
 const int relay1=24, relay2=25, relay3=26, relay4=27, waterLvl=18;
-bool timer=false, aut=false, change=false, invalid=false;
-int onPeriod=0, offPeriod=0, h=0, manual=0;
-int tThreshold=0, hThreshold=0, TDSMaxOffset=0, TDSMinOffset=0, pumpElapse=0, fertElapse=0, nextSwitch=0, line=1, idl=0;
+bool aut=true, change=false, invalid=false;
+int h=0, manual=0, pumpElapse=0, fertA_Elapse=0, fertB_Elapse=0, fertC_Elapse=0;
+int tThreshold=0, hThreshold=0, TDSMaxOffset=0, TDSMinOffset=0, pumpIdle=0, line=1, idl=0;
 float hA, hB, tA, tB, pH=0, rec[15]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 DHT dhtA(DHTA, DHTTYPE);
 DHT dhtB(DHTB, DHTTYPE);
 
 // read the buttons
-int read_LCD_buttons()
-{
+int read_LCD_buttons(){
  adc_key_in = analogRead(0);      // read the value from the sensor 
  // my buttons when read are centered at these valies: 0, 144, 329, 504, 741
  // we add approx 50 to those values and check to see if we are close
@@ -103,6 +102,7 @@ void PHSensor(){
 }
 
 void TdsMeter(){
+  float waterTemp = WaterTemperature();
   while (true){
     static unsigned long analogSampleTimepoint = millis();
     
@@ -151,7 +151,7 @@ int getMedianNum(int bArray[], int iFilterLen){
   return bTemp;
 }
 
-void WaterTemperature(){
+float WaterTemperature(){
   byte i;
   byte present = 0;
   byte type_s;
@@ -188,7 +188,8 @@ void WaterTemperature(){
       else if (cfg == 0x40) raw = raw & ~1; // 11 bit res, 375 ms
       //// default is 12 bit resolution, 750 ms conversion time
     }
-    waterTemp = (float)raw / 16.0;
+    float waterTemp = (float)raw / 16.0;
+    return waterTemp;
   }
 }
 
@@ -213,58 +214,53 @@ void HTSensor(){
 }
 
 void pumpControl(){
-  if (fertElapse<=0){
-    digitalWrite(relay2, LOW);
+  if (fertA_Elapse>0){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, HIGH);
     digitalWrite(relay3, LOW);
     digitalWrite(relay4, LOW);
   }
+  else if (fertB_Elapse>0){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, HIGH);
+    digitalWrite(relay4, LOW);
+  }
+  else if (fertC_Elapse>0){
+    digitalWrite(relay1, LOW);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, HIGH);
+  }
+  else if (pumpElapse>0){
+    digitalWrite(relay1, HIGH);
+    digitalWrite(relay2, LOW);
+    digitalWrite(relay3, LOW);
+    digitalWrite(relay4, LOW);
+    pumpIdle=0;
+  }
+  
   if (pumpElapse<=0) digitalWrite(relay1, LOW);
-  if (aut==true){
-    if (fertElapse>0){
-      digitalWrite(relay2, HIGH);
-      digitalWrite(relay3, HIGH);
-      digitalWrite(relay4, HIGH);
-    }
-    else if (pumpElapse>0) digitalWrite(relay1, HIGH);
-  }
-  else if(aut==false){
-    if (manual==0){
-      pumpElapse=0;
-      fertElapse=0;
-    }
-    else if (manual==1){
-      digitalWrite(relay1, HIGH);
-      digitalWrite(relay2, LOW);
-      digitalWrite(relay3, LOW);
-      digitalWrite(relay4, LOW);
-    }
-    else if (manual==2){
-      digitalWrite(relay1, LOW);
-      digitalWrite(relay2, HIGH);
-      digitalWrite(relay3, LOW);
-      digitalWrite(relay4, LOW);
-    }
-    else if (manual==3){
-      digitalWrite(relay1, LOW);
-      digitalWrite(relay2, LOW);
-      digitalWrite(relay3, HIGH);
-      digitalWrite(relay4, LOW);
-    }
-    else if (manual==4){
-      digitalWrite(relay1, LOW);
-      digitalWrite(relay2, LOW);
-      digitalWrite(relay3, LOW);
-      digitalWrite(relay4, HIGH);
-    }
-  }
+  if (fertC_Elapse<=0) digitalWrite(relay4, LOW);
+  if (fertB_Elapse<=0) digitalWrite(relay3, LOW);
+  if (fertA_Elapse<=0) digitalWrite(relay2, LOW);
+
+  if (rec[1]!=int(digitalRead(relay1)) || rec[2]!=int(digitalRead(relay2)) || rec[3]!=int(digitalRead(relay3)) || rec[4]!=int(digitalRead(relay4))) change = true;
 }
 
 void variablesManager(){
   if (now() >= ts+1){
     idl++;
-    if (fertElapse>0) fertElapse--;
+    if (!digitalRead(relay1)){
+      if (pumpIdle>=7200) pumpElapse=300;
+      else pumpIdle++;
+    }
+    
+    if (fertA_Elapse>0) fertA_Elapse--;
+    else if (fertB_Elapse>0) fertB_Elapse--;
+    else if (fertC_Elapse>0) fertC_Elapse--;
     else if (pumpElapse>0) pumpElapse--;
-    ts = now();
+    
     if (PowSecInd < 60){
       PowSec[PowSecInd] = ina219.getPower_mW();
       PowSecInd++;
@@ -276,6 +272,7 @@ void variablesManager(){
       PowSecAve = PowSecAve/60;
       PowSecInd = 0;
     }
+    ts = now();
   }
   if (now() >= tm+60){
     tm = now();
@@ -288,14 +285,19 @@ void variablesManager(){
         PowMinAve = PowMinAve + PowMin[i];
       }
       mWh = PowMinAve/60;
-      if(mWh > 100) Wh = mWh / 1000;
-      if(Wh > 100) kWh = Wh / 1000;
+      if(mWh > 100){
+        Wh = mWh / 1000;
+        mWh = 0;
+      }
+      if(Wh > 100){
+        kWh = Wh / 1000;
+        Wh = 0;
+      }
       PowMinInd = 0;
     }
   }
   if (now() >= tstamp+interval){
     HTSensor();
-    WaterTemperature();
 	  TdsMeter();
     PHSensor();
     float shuntvoltage = ina219.getShuntVoltage_mV();
@@ -319,6 +321,7 @@ void kypdBtn(){
   if(lcd_key==btnSELECT){
     digitalWrite(bl,HIGH);
     lcd.display();
+    line=1;
     idl=0;
     delay(200);
   }
@@ -340,11 +343,39 @@ void kypdBtn(){
     delay(200);
   } 
   if(lcd_key==btnLEFT){
-    manual++;
+    if(aut==false) manual++;
     delay(200);
     if (manual>4 || aut==true) manual=0;
-    if (manual==1) pumpElapse=120;
-    else if (manual>1) fertElapse=20;
+    if (manual==0){
+      pumpElapse=0;
+      fertA_Elapse=0;
+      fertB_Elapse=0;
+      fertC_Elapse=0;
+    }
+    else if (manual==1){
+      pumpElapse=300;
+      fertA_Elapse=0;
+      fertB_Elapse=0;
+      fertC_Elapse=0;
+    }
+    else if (manual==2){
+      pumpElapse=0;
+      fertA_Elapse=20;
+      fertB_Elapse=0;
+      fertC_Elapse=0;
+    }
+    else if (manual==3){
+      pumpElapse=0;
+      fertA_Elapse=0;
+      fertB_Elapse=20;
+      fertC_Elapse=0;
+    }
+    else if (manual==4){
+      pumpElapse=0;
+      fertA_Elapse=0;
+      fertB_Elapse=0;
+      fertC_Elapse=20;
+    }
   }
   if(idl>=60){
     digitalWrite(bl,LOW);
@@ -493,17 +524,17 @@ void serComm(){
         }
         else if (channel == relay2+100 && bool(dataKeys["value"])==true){
           manual=2;
-          fertElapse=20;
+          fertA_Elapse=20;
           change=true;
         }
         else if (channel == relay3+100 && bool(dataKeys["value"])==true){
           manual=3;
-          fertElapse=20;
+          fertB_Elapse=20;
           change=true;
         }
         else if (channel == relay4+100 && bool(dataKeys["value"])==true){
           manual=4;
-          fertElapse=20;
+          fertC_Elapse=20;
           change=true;
         }
         else if (channel==106){
@@ -511,7 +542,15 @@ void serComm(){
           change=true;
         }
         else if (channel==107){
-          fertElapse=int(dataKeys["value"]);
+          fertA_Elapse=int(dataKeys["value"]);
+          change=true;
+        }
+        else if (channel==108){
+          fertB_Elapse=int(dataKeys["value"]);
+          change=true;
+        }
+        else if (channel==109){
+          fertC_Elapse=int(dataKeys["value"]);
           change=true;
         }
       }
@@ -611,11 +650,6 @@ void loop()
       lcd.print("PumpOff Auto:");
       if (aut==true) lcd.print("ON~");
       else lcd.print("OFF");
-    } 
-    else if(digitalRead(relay2) && digitalRead(relay3) && digitalRead(relay4)){
-      lcd.print("AllFert: ON  ~");
-      if(fertElapse<10)lcd.print("0");
-      lcd.print(fertElapse);
     }
     else if(digitalRead(relay1)){
       lcd.print("MainPump: ON~");
@@ -625,18 +659,18 @@ void loop()
     }
     else if(digitalRead(relay2) && !digitalRead(relay3) && !digitalRead(relay4)){
       lcd.print("Fert A: ON   ~");
-      if(fertElapse<10)lcd.print("0");
-      lcd.print(fertElapse);
+      if(fertA_Elapse<10)lcd.print("0");
+      lcd.print(fertA_Elapse);
     }
     else if(!digitalRead(relay2) && digitalRead(relay3) && !digitalRead(relay4)){
       lcd.print("Fert B: ON   ~");
-      if(fertElapse<10)lcd.print("0");
-      lcd.print(fertElapse);
+      if(fertB_Elapse<10)lcd.print("0");
+      lcd.print(fertB_Elapse);
     }
     else if(!digitalRead(relay2) && !digitalRead(relay3) && digitalRead(relay4)){
       lcd.print("Fert C: ON   ~");
-      if(fertElapse<10)lcd.print("0");
-      lcd.print(fertElapse);
+      if(fertC_Elapse<10)lcd.print("0");
+      lcd.print(fertC_Elapse);
     }
   }
   else if(line==2){
